@@ -1,0 +1,608 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<XILICA>
+  <XILICA_HEADER XML_TYPE="15" XML_CONSOLE_APP="SolaroConsole" XML_APP_VERSION="4.4.0" XML_OEM_ID="0"></XILICA_HEADER>
+<LIBRARY>
+
+<DRIVER_DEF>
+
+<DEFINITION ID="4500001" NAME="Grandview GRIP" DESC="Grandview GRIP" CAT1="Grandview" CAT2="Motorised Projector Screen" MANUFACTURER="Grandview" OEM="" REGION="" MASTER_IO_CARD="CARD_CUSTOM_MASTER" BOOT_ID="0x4001" CTL_MAP="TRUE" CTL_DRIVER_TYPE="1" CTL_PCOL="4500001" DANTE="TRUE" SIGN="8a69cd4cb14d554ba526155532e83a0c" VERSION="1.0.0" AUTHOR="Joshua Cerecke - White Label AV" C_DATE="2022-03-01 14:59:59" M_DATE="2022-03-14 13:33:04" CUSTOM="TRUE" 
+LUA_SCRIPT="-- JSON LIBRARY
+--
+-- json.lua
+--
+-- Copyright (c) 2020 rxi
+--
+-- Permission is hereby granted, free of charge, to any person obtaining a copy of
+-- this software and associated documentation files (the &quot;Software&quot;), to deal in
+-- the Software without restriction, including without limitation the rights to
+-- use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+-- of the Software, and to permit persons to whom the Software is furnished to do
+-- so, subject to the following conditions:
+--
+-- The above copyright notice and this permission notice shall be included in all
+-- copies or substantial portions of the Software.
+--
+-- THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+-- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+-- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+-- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+-- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+-- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+-- SOFTWARE.
+--
+
+local json = { _version = &quot;0.1.2&quot; }
+
+-------------------------------------------------------------------------------
+-- Encode
+-------------------------------------------------------------------------------
+
+local encode
+
+function error(str)
+  XConsoleLog(G_driverID, &quot;ERROR: &quot; .. str .. &apos;\n&apos; )
+end
+
+local escape_char_map = {
+  [ &quot;\\&quot; ] = &quot;\\&quot;,
+  [ &quot;\&quot;&quot; ] = &quot;\&quot;&quot;,
+  [ &quot;\b&quot; ] = &quot;b&quot;,
+  [ &quot;\f&quot; ] = &quot;f&quot;,
+  [ &quot;\n&quot; ] = &quot;n&quot;,
+  [ &quot;\r&quot; ] = &quot;r&quot;,
+  [ &quot;\t&quot; ] = &quot;t&quot;,
+}
+
+local escape_char_map_inv = { [ &quot;/&quot; ] = &quot;/&quot; }
+for k, v in pairs(escape_char_map) do
+  escape_char_map_inv[v] = k
+end
+
+
+local function escape_char(c)
+  return &quot;\\&quot; .. (escape_char_map[c] or string.format(&quot;u%04x&quot;, c:byte()))
+end
+
+
+local function encode_nil(val)
+  return &quot;null&quot;
+end
+
+
+local function encode_table(val, stack)
+  local res = {}
+  stack = stack or {}
+
+  -- Circular reference?
+  if stack[val] then error(&quot;circular reference&quot;) end
+
+  stack[val] = true
+
+  if rawget(val, 1) ~= nil or next(val) == nil then
+    -- Treat as array -- check keys are valid and it is not sparse
+    local n = 0
+    for k in pairs(val) do
+      if type(k) ~= &quot;number&quot; then
+        error(&quot;invalid table: mixed or invalid key types&quot;)
+      end
+      n = n + 1
+    end
+    if n ~= #val then
+      error(&quot;invalid table: sparse array&quot;)
+    end
+    -- Encode
+    for i, v in ipairs(val) do
+      table.insert(res, encode(v, stack))
+    end
+    stack[val] = nil
+    return &quot;[&quot; .. table.concat(res, &quot;,&quot;) .. &quot;]&quot;
+
+  else
+    -- Treat as an object
+    for k, v in pairs(val) do
+      if type(k) ~= &quot;string&quot; then
+        error(&quot;invalid table: mixed or invalid key types&quot;)
+      end
+      table.insert(res, encode(k, stack) .. &quot;:&quot; .. encode(v, stack))
+    end
+    stack[val] = nil
+    return &quot;{&quot; .. table.concat(res, &quot;,&quot;) .. &quot;}&quot;
+  end
+end
+
+
+local function encode_string(val)
+  return &apos;&quot;&apos; .. val:gsub(&apos;[%z\1-\31\\&quot;]&apos;, escape_char) .. &apos;&quot;&apos;
+end
+
+
+local function encode_number(val)
+  -- Check for NaN, -inf and inf
+  if val ~= val or val &lt;= -math.huge or val &gt;= math.huge then
+    error(&quot;unexpected number value &apos;&quot; .. tostring(val) .. &quot;&apos;&quot;)
+  end
+  return string.format(&quot;%.14g&quot;, val)
+end
+
+
+local type_func_map = {
+  [ &quot;nil&quot;     ] = encode_nil,
+  [ &quot;table&quot;   ] = encode_table,
+  [ &quot;string&quot;  ] = encode_string,
+  [ &quot;number&quot;  ] = encode_number,
+  [ &quot;boolean&quot; ] = tostring,
+}
+
+
+encode = function(val, stack)
+  local t = type(val)
+  local f = type_func_map[t]
+  if f then
+    return f(val, stack)
+  end
+  error(&quot;unexpected type &apos;&quot; .. t .. &quot;&apos;&quot;)
+end
+
+
+function json.encode(val)
+  return ( encode(val) )
+end
+
+
+-------------------------------------------------------------------------------
+-- Decode
+-------------------------------------------------------------------------------
+
+local parse
+
+local function create_set(...)
+  local res = {}
+  for i = 1, select(&quot;#&quot;, ...) do
+    res[ select(i, ...) ] = true
+  end
+  return res
+end
+
+local space_chars   = create_set(&quot; &quot;, &quot;\t&quot;, &quot;\r&quot;, &quot;\n&quot;)
+local delim_chars   = create_set(&quot; &quot;, &quot;\t&quot;, &quot;\r&quot;, &quot;\n&quot;, &quot;]&quot;, &quot;}&quot;, &quot;,&quot;)
+local escape_chars  = create_set(&quot;\\&quot;, &quot;/&quot;, &apos;&quot;&apos;, &quot;b&quot;, &quot;f&quot;, &quot;n&quot;, &quot;r&quot;, &quot;t&quot;, &quot;u&quot;)
+local literals      = create_set(&quot;true&quot;, &quot;false&quot;, &quot;null&quot;)
+
+local literal_map = {
+  [ &quot;true&quot;  ] = true,
+  [ &quot;false&quot; ] = false,
+  [ &quot;null&quot;  ] = nil,
+}
+
+
+local function next_char(str, idx, set, negate)
+    XConsoleLog(&quot;ERROR &quot;..type(idx))
+  for i = idx, #str do
+    if set[str:sub(i, i)] ~= negate then
+      return i
+    end
+  end
+  return #str + 1
+end
+
+
+local function decode_error(str, idx, msg)
+  local line_count = 1
+  local col_count = 1
+  for i = 1, idx - 1 do
+    col_count = col_count + 1
+    if str:sub(i, i) == &quot;\n&quot; then
+      line_count = line_count + 1
+      col_count = 1
+    end
+  end
+  error( string.format(&quot;%s at line %d col %d&quot;, msg, line_count, col_count) )
+end
+
+
+local function codepoint_to_utf8(n)
+  -- http://scripts.sil.org/cms/scripts/page.php?site_id=nrsi&amp;id=iws-appendixa
+  local f = math.floor
+  if n &lt;= 0x7f then
+    return string.char(n)
+  elseif n &lt;= 0x7ff then
+    return string.char(f(n / 64) + 192, n % 64 + 128)
+  elseif n &lt;= 0xffff then
+    return string.char(f(n / 4096) + 224, f(n % 4096 / 64) + 128, n % 64 + 128)
+  elseif n &lt;= 0x10ffff then
+    return string.char(f(n / 262144) + 240, f(n % 262144 / 4096) + 128,
+                       f(n % 4096 / 64) + 128, n % 64 + 128)
+  end
+  error( string.format(&quot;invalid unicode codepoint &apos;%x&apos;&quot;, n) )
+end
+
+
+local function parse_unicode_escape(s)
+  local n1 = tonumber( s:sub(1, 4),  16 )
+  local n2 = tonumber( s:sub(7, 10), 16 )
+   -- Surrogate pair?
+  if n2 then
+    return codepoint_to_utf8((n1 - 0xd800) * 0x400 + (n2 - 0xdc00) + 0x10000)
+  else
+    return codepoint_to_utf8(n1)
+  end
+end
+
+
+local function parse_string(str, i)
+  local res = &quot;&quot;
+  local j = i + 1
+  local k = j
+
+  while j &lt;= #str do
+    local x = str:byte(j)
+
+    if x &lt; 32 then
+      decode_error(str, j, &quot;control character in string&quot;)
+
+    elseif x == 92 then -- `\`: Escape
+      res = res .. str:sub(k, j - 1)
+      j = j + 1
+      local c = str:sub(j, j)
+      if c == &quot;u&quot; then
+        local hex = str:match(&quot;^[dD][89aAbB]%x%x\\u%x%x%x%x&quot;, j + 1)
+                 or str:match(&quot;^%x%x%x%x&quot;, j + 1)
+                 or decode_error(str, j - 1, &quot;invalid unicode escape in string&quot;)
+        res = res .. parse_unicode_escape(hex)
+        j = j + #hex
+      else
+        if not escape_chars[c] then
+          decode_error(str, j - 1, &quot;invalid escape char &apos;&quot; .. c .. &quot;&apos; in string&quot;)
+        end
+        res = res .. escape_char_map_inv[c]
+      end
+      k = j + 1
+
+    elseif x == 34 then -- `&quot;`: End of string
+      res = res .. str:sub(k, j - 1)
+      return res, j + 1
+    end
+
+    j = j + 1
+  end
+
+  decode_error(str, i, &quot;expected closing quote for string&quot;)
+end
+
+
+local function parse_number(str, i)
+  local x = next_char(str, i, delim_chars)
+  local s = str:sub(i, x - 1)
+  local n = tonumber(s)
+  if not n then
+    decode_error(str, i, &quot;invalid number &apos;&quot; .. s .. &quot;&apos;&quot;)
+  end
+  return n, x
+end
+
+
+local function parse_literal(str, i)
+  local x = next_char(str, i, delim_chars)
+  local word = str:sub(i, x - 1)
+  if not literals[word] then
+    decode_error(str, i, &quot;invalid literal &apos;&quot; .. word .. &quot;&apos;&quot;)
+  end
+  return literal_map[word], x
+end
+
+
+local function parse_array(str, i)
+  local res = {}
+  local n = 1
+  i = i + 1
+  while 1 do
+    local x
+    i = next_char(str, i, space_chars, true)
+    -- Empty / end of array?
+    if str:sub(i, i) == &quot;]&quot; then
+      i = i + 1
+      break
+    end
+    -- Read token
+    x, i = parse(str, i)
+    res[n] = x
+    n = n + 1
+    -- Next token
+    i = next_char(str, i, space_chars, true)
+    local chr = str:sub(i, i)
+    i = i + 1
+    if chr == &quot;]&quot; then break end
+    if chr ~= &quot;,&quot; then decode_error(str, i, &quot;expected &apos;]&apos; or &apos;,&apos;&quot;) end
+  end
+  return res, i
+end
+
+
+local function parse_object(str, i)
+  local res = {}
+  i = i + 1
+  while 1 do
+    local key, val
+    i = next_char(str, i, space_chars, true)
+    -- Empty / end of object?
+    if str:sub(i, i) == &quot;}&quot; then
+      i = i + 1
+      break
+    end
+    -- Read key
+    if str:sub(i, i) ~= &apos;&quot;&apos; then
+      decode_error(str, i, &quot;expected string for key&quot;)
+    end
+    key, i = parse(str, i)
+    -- Read &apos;:&apos; delimiter
+    i = next_char(str, i, space_chars, true)
+    if str:sub(i, i) ~= &quot;:&quot; then
+      decode_error(str, i, &quot;expected &apos;:&apos; after key&quot;)
+    end
+    i = next_char(str, i + 1, space_chars, true)
+    -- Read value
+    val, i = parse(str, i)
+    -- Set
+    res[key] = val
+    -- Next token
+    i = next_char(str, i, space_chars, true)
+    local chr = str:sub(i, i)
+    i = i + 1
+    if chr == &quot;}&quot; then break end
+    if chr ~= &quot;,&quot; then decode_error(str, i, &quot;expected &apos;}&apos; or &apos;,&apos;&quot;) end
+  end
+  return res, i
+end
+
+
+local char_func_map = {
+  [ &apos;&quot;&apos; ] = parse_string,
+  [ &quot;0&quot; ] = parse_number,
+  [ &quot;1&quot; ] = parse_number,
+  [ &quot;2&quot; ] = parse_number,
+  [ &quot;3&quot; ] = parse_number,
+  [ &quot;4&quot; ] = parse_number,
+  [ &quot;5&quot; ] = parse_number,
+  [ &quot;6&quot; ] = parse_number,
+  [ &quot;7&quot; ] = parse_number,
+  [ &quot;8&quot; ] = parse_number,
+  [ &quot;9&quot; ] = parse_number,
+  [ &quot;-&quot; ] = parse_number,
+  [ &quot;t&quot; ] = parse_literal,
+  [ &quot;f&quot; ] = parse_literal,
+  [ &quot;n&quot; ] = parse_literal,
+  [ &quot;[&quot; ] = parse_array,
+  [ &quot;{&quot; ] = parse_object,
+}
+
+
+parse = function(str, idx)
+  local chr = str:sub(idx, idx)
+  local f = char_func_map[chr]
+  if f then
+    return f(str, idx)
+  end
+  decode_error(str, idx, &quot;unexpected character &apos;&quot; .. chr .. &quot;&apos;&quot;)
+end
+
+
+function json.decode(str)
+  if type(str) ~= &quot;string&quot; then
+    error(&quot;expected argument of type string, got &quot; .. type(str))
+  end
+  local res, idx = parse(str, next_char(str, 1, space_chars, true))
+  idx = next_char(str, idx, space_chars, true)
+  if idx &lt;= #str then
+    decode_error(str, idx, &quot;trailing garbage&quot;)
+  end
+  return res
+end
+
+----------------------------------------------------------------------------------
+-- LuaDriverInitialization - Lua Initialization function that will be called when
+--        we put the driver ONLINE
+----------------------------------------------------------------------------------
+function LuaDriverInitialization (id, ip, deviceParamTable)
+
+    G_driverID = id
+    G_deviceIP = ip
+    G_devicePort = 80
+
+    -- Setup additional device parameter into global variables
+    G_PollRate = deviceParamTable[&apos;Poll Rate&apos;]
+    XConsoleLog(G_driverID, &apos;Starting Lua Script initialization for processor ID : &apos; .. string.format(&apos;%d&apos;, G_driverID) .. &apos; Device IP : &apos; .. G_deviceIP .. &apos;\n&apos;)
+
+    -- Setup Global variables for UI elements
+    G_btnsTable = {
+    G_Open = &apos;Open&apos;,
+    G_Close = &apos;Close&apos;,
+    G_Stop = &apos;Stop&apos;,
+    }
+
+    G_ledFBTable = {
+    G_Open = &apos;Open FB&apos;,
+    G_Opening = &apos;Opening FB&apos;,
+    G_Closed = &apos;Closed FB&apos;,
+    G_Closing = &apos;Closing FB&apos;,
+    G_Stopped = &apos;Stopped FB&apos;,
+    }
+
+    G_ConnectionStatus = &apos;Connection Status&apos;
+
+    -- Initialise UI elements
+    for k, v in pairs(G_btnsTable) do
+      XUIUpdateRequest(G_driverID, v, 0)
+    end
+    for k, v in pairs(G_ledFBTable) do
+      XUIUpdateRequest(G_driverID, v, 0)
+    end
+
+    -- Declare commands
+    G_cmdsTable = {
+    G_Close = &apos;GET /Close.js?a=100 HTTP/1.1\n\n\n&apos;,
+    G_Open = &apos;GET /Open.js?a=100 HTTP/1.1\n\n\n&apos;,
+    G_Stop = &apos;GET /Stop.js?a=100 HTTP/1.1\n\n\n&apos;,
+    G_GetStatus = &apos;GET /GetDevInfoList.js HTTP/1.1\n\n\n&apos;,
+    }
+
+    -- Declare Status Responses
+    G_stsTable = {
+    G_Open = &apos;Opened&apos;,
+    G_Opening = &apos;Opening&apos;,
+    G_Closed = &apos;Closed&apos;,
+    G_Closing = &apos;Closing&apos;,
+    G_Stopped = &apos;Stop&apos;,
+    }
+
+    -- Start Network Server Initialization here
+    G_tcpClientID = XTCPClientSetup(G_driverID, G_deviceIP, G_devicePort, 100)
+
+    -- Start timer initialization here
+    if G_PollRate &gt; 0 then
+      XStartTimer(G_driverID, G_PollRate * 1000)
+      LuaTimerCallback()
+    end
+    return
+end
+
+
+----------------------------------------------------------------------------------
+-- LuaTCPClientMessageReceivedCallback - Callback function when a TCP client
+--       connection received data from remote end.
+----------------------------------------------------------------------------------
+function LuaTCPClientMessageReceivedCallback(clientId, receivedData)
+    result = XConsoleLog(G_driverID, &apos;In LuaTCPClientMessageReceivedCallback&apos; .. &apos; client ID : &apos; .. string.format(&apos;%d&apos;, clientId) .. &apos;\n&apos;)
+    result = XConsoleLog(G_driverID, receivedData .. &apos;\n&apos;)
+
+    local receivedJson = string.match(receivedData, &quot;{.+}&quot;)
+    if receivedJson then
+        local parsedData = json.decode(receivedJson)
+
+        local status = &quot;&quot;
+            
+        if parsedData.status then
+          status = parsedData.status
+        elseif parsedData.devInfo[1].status then
+          status = parsedData.devInfo[1].status
+        end
+        
+        for k, v in pairs(G_stsTable) do
+          if v == status then
+            XUIUpdateRequest(G_driverID, G_ledFBTable[k], 1)
+          else
+            XUIUpdateRequest(G_driverID, G_ledFBTable[k], 0)
+          end
+
+        end
+
+    end
+
+    return
+end
+
+----------------------------------------------------------------------------------
+-- LuaUIUpdatedCallback - Callback function when UI changes has been detected
+----------------------------------------------------------------------------------
+function LuaUIUpdatedCallback(objectName, strData)
+    result = XConsoleLog(G_driverID, &apos;In LuaUIUpdatedCallback&apos; .. &apos; processor ID : &apos; .. string.format(&apos;%d&apos;, G_driverID) .. &apos;\n&apos;)
+    result = XConsoleLog(G_driverID, &apos;In LuaUIUpdatedCallback&apos; .. &apos; ObjectName : &apos; .. objectName .. &apos;\n&apos;)
+    result = XConsoleLog(G_driverID, &apos;In LuaUIUpdatedCallback&apos; .. &apos; Data : &apos; .. strData .. &apos;\n&apos;)
+    
+    if strData == &quot;1&quot; then
+      for k, v in pairs(G_btnsTable) do
+        if v == objectName then
+          if XTCPClientSendMessage(G_driverID, G_tcpClientID, G_cmdsTable[k]) then
+            XUIUpdateRequest(G_driverID, G_ConnectionStatus, 1)
+          else
+            XUIUpdateRequest(G_driverID, G_ConnectionStatus, 0)
+          end
+          --XUIUpdateRequest(G_driverID, objectName, 0)
+          break
+        end
+      end
+    end
+    return
+end
+
+----------------------------------------------------------------------------------
+-- LuaTimerCallback - Callback function when timer is triggered
+----------------------------------------------------------------------------------
+function LuaTimerCallback()
+    result = XConsoleLog(G_driverID, &apos;In LuaTimerCallback\n&apos;)
+    if XTCPClientSendMessage(G_driverID, G_tcpClientID, G_cmdsTable.G_GetStatus) then
+      XUIUpdateRequest(G_driverID, G_ConnectionStatus, 1)
+    else
+      XUIUpdateRequest(G_driverID, G_ConnectionStatus, 0)
+    end
+    return
+end"
+>
+<DEVICE_PARAM_ID ID="0" PARAM_ID_D_TYPE="10" NAME="Poll Rate" DEFAULT="1"></DEVICE_PARAM_ID>
+</DEFINITION>
+</DRIVER_DEF>
+
+<LUA_INTERFACE_DEF DEF_ID="130026" WIDTH="10" HEIGHT="10" COMP_COLOR="black" BORDER_COLOR="darkslategrey" TEXT_COLOR="white" CONTAINER_WIDTH="1327" CONTAINER_HEIGHT="1087" NAME="Name">
+<LUA_PANEL DEF_ID="130027" COMP_ID="1" DISPLAY_ORDER="0" WIDTH="10" HEIGHT="10" COMP_COLOR="black" BORDER_COLOR="darkslategrey" TEXT_COLOR="white" CONTAINER_WIDTH="656" CONTAINER_HEIGHT="369" NAME="Page 1" BG_COLOR="White" SYS="TRUE">
+<COMPONENT DEF_ID="116000" COMP_ID="31" DISPLAY_ORDER="2" X="190" Y="189" WIDTH="50" HEIGHT="50" COMP_COLOR="Red" BORDER_COLOR="TransparentBlack" TEXT_COLOR="White" F_SIZE="12" LUA_DRIVER="TRUE" SHOW_UNIT="FALSE" MAX="1" MIN="0" STEP="1" NON_CONTROLLABLE="TRUE" BUTTON_TEXT="Closed" BUTTON_ON_TEXT="Closed" BUTTON_OFF_COLOR="DimGrey" BUTTON_TYPE="11">
+<GENERIC_CONTROL IP="192.168.99.201" PROTOCOL="4500001">
+<KEY_ATTR T="12" V="Closed FB" > </KEY_ATTR>
+<DEV_ATTR  T="10" V="1"> </DEV_ATTR>
+</GENERIC_CONTROL>
+</COMPONENT>
+<COMPONENT DEF_ID="116000" COMP_ID="32" DISPLAY_ORDER="3" X="190" Y="109" WIDTH="50" HEIGHT="50" COMP_COLOR="Red" BORDER_COLOR="TransparentBlack" TEXT_COLOR="White" F_SIZE="12" LUA_DRIVER="TRUE" SHOW_UNIT="FALSE" MAX="1" MIN="0" STEP="1" NON_CONTROLLABLE="TRUE" BUTTON_TEXT="Open" BUTTON_ON_TEXT="Open" BUTTON_OFF_COLOR="DimGrey" BUTTON_TYPE="11">
+<GENERIC_CONTROL IP="192.168.99.201" PROTOCOL="4500001">
+<KEY_ATTR T="12" V="Open FB" > </KEY_ATTR>
+<DEV_ATTR  T="10" V="1"> </DEV_ATTR>
+</GENERIC_CONTROL>
+</COMPONENT>
+<COMPONENT DEF_ID="116000" COMP_ID="33" DISPLAY_ORDER="7" X="410" Y="189" WIDTH="50" HEIGHT="50" COMP_COLOR="Red" BORDER_COLOR="TransparentBlack" TEXT_COLOR="White" F_SIZE="12" LUA_DRIVER="TRUE" SHOW_UNIT="FALSE" MAX="1" MIN="0" STEP="1" NON_CONTROLLABLE="TRUE" BUTTON_TEXT="Closing
+" BUTTON_ON_TEXT="Closing
+" BUTTON_OFF_COLOR="DimGrey" BUTTON_TYPE="11">
+<GENERIC_CONTROL IP="192.168.99.201" PROTOCOL="4500001">
+<KEY_ATTR T="12" V="Closing FB" > </KEY_ATTR>
+<DEV_ATTR  T="10" V="1"> </DEV_ATTR>
+</GENERIC_CONTROL>
+</COMPONENT>
+<COMPONENT DEF_ID="116000" COMP_ID="34" DISPLAY_ORDER="5" X="410" Y="109" WIDTH="50" HEIGHT="50" COMP_COLOR="Red" BORDER_COLOR="TransparentBlack" TEXT_COLOR="White" F_SIZE="12" LUA_DRIVER="TRUE" SHOW_UNIT="FALSE" MAX="1" MIN="0" STEP="1" NON_CONTROLLABLE="TRUE" BUTTON_TEXT="Opening" BUTTON_ON_TEXT="Opening" BUTTON_OFF_COLOR="DimGrey" BUTTON_TYPE="11">
+<GENERIC_CONTROL IP="192.168.99.201" PROTOCOL="4500001">
+<KEY_ATTR T="12" V="Opening FB" > </KEY_ATTR>
+<DEV_ATTR  T="10" V="1"> </DEV_ATTR>
+</GENERIC_CONTROL>
+</COMPONENT>
+<COMPONENT DEF_ID="116000" COMP_ID="35" DISPLAY_ORDER="4" X="190" Y="269" WIDTH="50" HEIGHT="50" COMP_COLOR="Red" BORDER_COLOR="TransparentBlack" TEXT_COLOR="White" F_SIZE="12" LUA_DRIVER="TRUE" SHOW_UNIT="FALSE" MAX="1" MIN="0" STEP="1" NON_CONTROLLABLE="TRUE" BUTTON_TEXT="Stopped" BUTTON_ON_TEXT="Stopped" BUTTON_OFF_COLOR="DimGrey" BUTTON_TYPE="11">
+<GENERIC_CONTROL IP="192.168.99.201" PROTOCOL="4500001">
+<KEY_ATTR T="12" V="Stopped FB" > </KEY_ATTR>
+<DEV_ATTR  T="10" V="1"> </DEV_ATTR>
+</GENERIC_CONTROL>
+</COMPONENT>
+<COMPONENT DEF_ID="116000" COMP_ID="17" DISPLAY_ORDER="8" X="250" Y="190" WIDTH="150" HEIGHT="50" COMP_COLOR="RoyalBlue" BORDER_COLOR="MidnightBlue" TEXT_COLOR="white" LUA_DRIVER="TRUE" MAX="1" MIN="0" STEP="1" CTRL_DESC="Close Trigger" BUTTON_TEXT="Close" BUTTON_TYPE="13">
+<GENERIC_CONTROL IP="192.168.99.201" PROTOCOL="4500001" DESC_NAME="Close Trigger">
+<KEY_ATTR T="12" V="Close" > </KEY_ATTR>
+<DEV_ATTR  T="10" V="1"> </DEV_ATTR>
+</GENERIC_CONTROL>
+</COMPONENT>
+<COMPONENT DEF_ID="116000" COMP_ID="16" DISPLAY_ORDER="1" X="250" Y="270" WIDTH="150" HEIGHT="50" COMP_COLOR="RoyalBlue" BORDER_COLOR="MidnightBlue" TEXT_COLOR="white" LUA_DRIVER="TRUE" MAX="1" MIN="0" STEP="1" CTRL_DESC="Stop Trigger" BUTTON_TEXT="Stop" BUTTON_TYPE="13">
+<GENERIC_CONTROL IP="192.168.99.201" PROTOCOL="4500001" DESC_NAME="Stop Trigger">
+<KEY_ATTR T="12" V="Stop" > </KEY_ATTR>
+<DEV_ATTR  T="10" V="1"> </DEV_ATTR>
+</GENERIC_CONTROL>
+</COMPONENT>
+<COMPONENT DEF_ID="116000" COMP_ID="15" DISPLAY_ORDER="0" X="250" Y="110" WIDTH="150" HEIGHT="50" COMP_COLOR="RoyalBlue" BORDER_COLOR="MidnightBlue" TEXT_COLOR="white" LUA_DRIVER="TRUE" MAX="1" MIN="0" STEP="1" CTRL_DESC="Open Trigger" BUTTON_TEXT="Open" BUTTON_TYPE="13">
+<GENERIC_CONTROL IP="192.168.99.201" PROTOCOL="4500001" DESC_NAME="Open Trigger">
+<KEY_ATTR T="12" V="Open" > </KEY_ATTR>
+<DEV_ATTR  T="10" V="1"> </DEV_ATTR>
+</GENERIC_CONTROL>
+</COMPONENT>
+<COMPONENT DEF_ID="112101" COMP_ID="1" DISPLAY_ORDER="9" X="150" Y="10" WIDTH="350" HEIGHT="60" COMP_COLOR="black" BORDER_COLOR="TransparentBlack" TEXT_COLOR="white" IMAGE="C:\Users\joshu\Downloads\logo.png" IMAGE_DATA="7019.IBkSG0fBZn....PCIgDQRA..AvE...vMHX.....PRIe.....YPWQXQ2TuYFc2ElbkAPPj8lXkARRsE1YkIUYgQVdwkbY7...CXRZTgEcX0DS5L1as4RXj8lXk4BdsAG......vyO3AWXisVYzAhXkcVZt0iHuu6uh.RZj0iHWUSSvzDbCUFZogjdxU1T54DUio2ZikCYh7iOfvCd5fWav0VYzEFH30FatMmN30iHgQ1ahUlNtMmNsUFcg8hHffmN30FbzsVOhDDYuIVYffUSPAxPuIWYfTiK1zxXwLCNfbSNtDSM4fiLzvBHx.SL17BL47RLzzBLwnCL4nCLw.BHf.BHf.BHh3CH7HGYloiTDYDH30FatMmNxQlY8HBZzQGb57xK2c2ctb2Lt7lbm8RL4jSNu.iLuHiLsHGYl0xb44FcggWKtM2Hh3CH7HGYloCQkM2XxkFbzk1atAhbjYlNgI1a0QWOhHBH30FatMmN30Fb8HBZzQGb57xKtMmKgQ1ahUlKi8VaufWXv8RLt.yKh.BdswlayoCdsAWSM0iHnQGcvoyKu31btDFYuIVYtL1as8BdgA2Kw3BLuzVauHBH30FatMmNyQmTkYVOhfFczAmNu7hay4RXj8lXk4xXu01K3EFbuDiKv7xbTkGbk8hTkM2a0I2XkIUYlMhHffWavoyPxUVXz8lbT81ar0iHAQ1ahUFHPg1az81bn8FbfLzPfHCLwbCHnbUZtQ1a2MWJh.BdsAWSMoSRtMGcg41XkkDQ8HBdsAmKokFY5DCMDQyM4byL1PyPxDSLEgSN3DTP4XSL4LSMw.SNzbyLh.BdsAWSMoCQuMVcsUlazkDQ8HBdsAmKjkFY5DCMDQyM4bCM1PyPxDSLEgSN3DTP4XSL4LSMw.SNzbyLh3CH7fWav0TS5PTYxklckQlQx8VafLGcRUlY5jlayQWXtMVYIQTOhfWav4RZoQlNwPCQzbSN2DiMzLjLwDSQ3jCNAETN1DSNyTSLvjCM2LiHfLGcRUlY5P1aiUWak4FcIQTOhfWav4BYoQlNwPCQzbSN2HiMzLjLwDSQ3jCNAETN1DSNyTSLvjCM2LiHu3CH77hbjYlNDU1biIWZvQWZu4lOfvyKxQlY5HEQF4CH77Bd5fWav0VYzElOfvyO3AWXisVYzARYtQVOhHmH+3Ccl2bU..vEamDQAQEdZydWIfaUUUg2b8oBpnBNgfBVnoFJPnfWhPPDwoREmPbJa.bfLo7PVNjFkgIWAL0LyLdgJChjL7.RjPl8Jh.ZkJYIZFnICInHHxPq+ydckK22YObN284duuGm0225999dm8Ye1Cq8Zu1qocCDtD7xdTzucmvNP3wR3QS3AQXiILEgamvOhv0R3ax3KS3rEYR+1hDHAJGfW1lS+1YlNEv+lnGmUx.SB3ZnANfX8XneuZB6CgGSQTSfg63H7wIh8+dxTSBTBXztOzuCmv9UvZgIQzfWPx.TBT4vv0Ka2ne+IDdlwP6ZtDNDhn+OmLEk.wDyVbhqoR3YEvSSX3l.wBTUDHT+RzuODg8LFaWmpO5kcgzeudh3+USlpR.GCWpBlsIPBTAvv0K6dP+9iI7NHbuKQsuuJgKg91Y7+tYR+YISYIfif9TOTp88RHUu24RXSER0zMljSJV4.orbh7foewj1unDxrMG.F82BgOO0NN7jorDvQPqpmwrEF96kH7QI7B3SIBluSmd1XHrpjo75BLb8xBOMXwwrJDrA5h.dzfW1SLYZKAJYBaT2fYKrEyDHrsJJwkQ3fSlxqzI5jL2lSDkFXCDlkvmfv6mkNdX7NvvkaduHTmGt+6lvzMARf7AX35zFJyOfV2b.ICUkWnJMLaOR52mkYxYK7ODvstjpeXohLo2lEROeNDd4DdJV9M1SBSHbRfDXmP2rnLMjvNQ3ykLbUowv0KKb.7oDBlsymv6NzJmOS5+I86u1G8xBhgaivySyarRArrblz+sjotDHA9bXesrb6SxPUkoDtvsuZmEu+p8OpRlzOYQ2RxjdQzumOw38Ln+9HD9EJnDut+Qmxj9cSl1RfDXWf2HDm.MAJiPp.jtE9m3UYw6t.BauSX1tqLdwQdNIBmbAeqtjvrMARf.gmlvMZnLuHs940SFppjX35kc+oee.KdumgvdPSfqJVZUYR++ne6MgOLgSjvdw+uDHARfZud4CneuAMkX8D9cRFnp7jv8VI7PM7NShvKglj2RLSDscBAQzEQ+8SRlpRfDP65kQIjA7P9pWXGBoQxNkj7SRkATUdR21L52AZn7uh.dTfIuOv0LdSfDHArYsxznemFm09Pjlgrd1ZRFXpDY3JDeOg9nHaSB3.0IRal.IPkNi22VHCq2DnhTkBdYAi1qyPY+YzD4ajLjk.IPBj.EmDtHRUNHMkC6Vd+046sdYaD86Qkmj7ai1D4uVPYPLne8D9UDxDl9KR3Hnx8JQ7ahvtDQFGb2M3pcGGgv3jvQzQz3AeKFVOF9x7eg9Nq2x5E9TYqxqurBqdWurHvQ9hD1H9+rR58VshxhMjSyscLdzRBaBgaUHcIP3lQHZBmBUGqrDMGh4udQXGI7341C7C0Olv+qPpCSjk4dN1XRt56dfLsS9v6Qei+aL2ewZziloWxAaUqun6kEqkObllXiNrsz.lN3zYZZj4.aLO9CZYXX6kS3xDH3mxj9sBY+7DJ3+hSS+uhEUXJyOLsfv2kp+0Uhl237gqW1wJzm8j9dTi5gpCynEL3tGB+lhc04uWO0uNv7JGh276HfZX67XvCGhu49wmZneLgoM.LD4jXF7KTQ8BiZduBY7wmuJf5M8NSTS6AkcvbaZ+y6IvOpGQ.aLgxcihZ6OzAA4LNCxgwyNFl+.i+KmaScwx2BKReVdr74BnNWlPsulW67gqjQ+aIpcNjF4YjalJ+bcbeFY9qamvuun1QVI1f67TrovumvKjamPMfHS6cmT42QQzV.MGLfM7zgiHDuIFi+MD9GMZjcIy72l2TOe.5fdX9z7tfwqL.q.8dmy6+BZ1axIoAV8yauZJNsKd1ZphM3OfU2kYK1AdtrTq6ilx0WELayo5kGjk90rT.dYuAl3YngfYK.LYcIB32wdYqguMMxutOLVhxuoHLYsMIQ.LnxOp.lsAU1dwRoLLKY1laia7dHit8mH7Pb37WOnegzbOdHX1B.z0HrwmAUGygv1UTsCodQCZyjSVHyuG81g8Yz1mHSOFTXrWsh2D9i6Ek2lBMhqieRDaG6Mg2IuQycFRls.ZOg+Ne5IurWngwWrgvXB3IPRzeo.4jEIS4hYb8L3SR14BdR28WW4ksyw771XRwGMP2hvISCFebcXEILXgcQM2O0vySw6boa.uY7hxGxfJZrAfK97JTc1u79eCMDLAyGtIA7aZyaTbGrTgGYQztAimWkpqSpnkTvK6C5qlEopCJF.aTtHp9FTQtnsZML2+87IobAzOMBAg6CvZBX75j4i5GDLnPmdF8x1Fg79F7tD1G5vp.b5fIP04HIrgZJ23z7LbhtKsHnmZHO+smJJQi7ErTxzLpP+MH753RYgTCSnNrzsUwRCZyQlNNKW3ppNvFWKQaYBOzHeID7xBbeYoeiB7ssnLCU3tT3WyXo9NkHNuc.Li1A3vwx8hUEySvR7GE.qETI7QSshVylSHA07nFdREGOWG8KT0vgExSU7BD1FGuh7ZHblJyZYYRuT9zUpfhgd.pfo4FJywXTvD8v0q4YHR+VQJKj9a90gktELRahEkyVIS16.2gVJMGRikwUBRueb82vHtoywZnLHAueyNtMiwzoP0cKi.y1YP3WKlFKgtfmpHJIxEoAnFug4ohE5pA0PMRE+eSRvtmVN92cVB5FGSi+cQH8U38IBR4903DsdTfutiKWgiaGGqs.UvXycL4VqoP+y53NNssRxfbzvlsnbvQx2bACzGISf1jXtuD0inCi20.C67eOwTa9P3io0.KIZ2CdAWmh4wxdJh9ML8ePyyNQ1nLE6lqpfWgn+VVLdhPXU8mQrSOXwD.uH3MDx.hJLdoBt5rdPEOaLZdOPGcQQnekxvQ8yGN2HN5o6zmP+zOUNFt5zI3tGYWnLo+TgzfClfmTAChlY4WBteB7zgKVH0KIXHcjrzbPByETF58mlh++yK1o6wcX7wwfQE7DHWGaOz8PnJDnibauEn2pPlBQuVdynlyyCsiOZOV39owv30B7EDQMbsEACulZXrp5XjYKjPdzr5GzAPJ+gyi4MlV6b7DhjX0Qvuae3SiYB9Vz27bCXsXNF3pfnnGW3BgGrkks0T65Xiv2PW6ZN4x6LUw5dRE7NwzjKXxeS7NcGZQVauF0YNGGzptEVxGULOguxNjB9eCRTaKdphHEV482Ps0MEvy+O7B4gQiMcPHcaktVl19ARP0epc9RA7LbKc.uj39n142PHMNnMFX6VysCuFZBvX+NrrMhaQjaiZi+6.dF7KV3dOih80RvD+FEt5J0AVS2KK7ZmethRzG54CjJ2GEgZ+JDp89jsVqM7cKL.lwjNXF9LJUkzpj9A9S4idYga08XF3u7qnxM8.Be+wJTqpyt3ab5Loe+Pz2BqTqfexxCo5DNAMk3yUSRJC5pINbHXXE6+NyvESvspHwl6nERqhYdNu.dJ7M1ScWVDI0kzsaQMicqaK8t2mBlsE1Nfg25FyjZGhRK.B8zJX1VX6DRW1dKkJucLCUc.jZxjEh+XgLYFcUJX1VXabMDNPVJaWFfBiRybCLtYeiX81eMOapJCPkheM49Ywlci1mQjsYHPoOgCApz0laiH36JwwYPsBWPH6ggkgaX0i6Ea3jXOc9Lb0sy+m53I1imm3ZjnRDfuVlIM7xfSjk1.KbNZemfu15xdPBytKyh8YdFlHtImTTYRODgKr5s8.LjzUxpWw1145XoA9qVJ0fJ5hdHLeMwrQ+EmYR+mhv757X0179NhNAL6mkSUqfzGP0IkzeHFm6AstN2Xbd9zhgMvCxjFRId9BYPnnV0B098VgPFgmpfKIDiqvP1cHjiGck8eeaAc9f8eIedGoLHE0d33IV338MTToCHrIyjdzDNVB+WALIBKvaxhzqxemUaCU2faGvY+KE21pqNRKnjsQDXLvGI+LKzilJXfV7kPVp6EKhwRn20yyh1osP0ZdVGHZj1Gx566p4YHDkmdLN+qKW4hwqqgF+1ZDG2eAgLZyTAmkBeDVmwy5N6Jm1.5LVlpTVI7niyvRF5s1.C8coe.FtaPSgc8k0XOD0OfKvBoa6uihkevv8ki49yufZqqsHXl8ZBYHkpCZkBB1lJLaA4Gi9FS1Aaj9RB4sGsKfIXXsS+CgTX6OuokJ.9d6mEKy7xf0oiZkrNrmPq1vP0rQGLzVPpaZ7ZDFD7stPGndfA5.0PnSZa3uzSrvF9ZC8hjnC0WtscMcjlYRDoS0QRaCoN8hw9BbysQ5f5wTt1nIZ17pJCsuayg8260IpVPpOdc5Z7J03qo0V5c89Eb0w37+oa34OpCFqfaWpKWSbRA7N3DhyonTqfL.W5ohmtL5aLSgZGC3rszcF00NlZgmvELb04hKGmHAJbRDiYlbJ+g6XUbLagdWkoXf4DQKpWXaDGOKJ24blhLuQ6zLxkzOpeXGUa5XDBc.ZqKLoS8TK0IIUkvvram.T0zRbz2YdZdlpHZabEoZE5pPsSAjSfnZT77CWgj2gQcB0xybfjEvu25kRFtHUuULG2r1cxnDW1HDQalnx.ZsPuuJ9gBYlyx0.H9ZWLTut7JmGFOKr4ggNZQ+10.7FielCXduPZ8waJTGDE82nzoxnTT2h1QFyzy5LTGjh+ln1Xb+cTEK.PsBOfhS.kSsB+1HpVfol2eGfF0QrjHJcKLx6jChgqN8C1.9HGOkijt3JhnTkPOHmeEBCWSY+qEDS5aa1wT+YsNrtVcHmWafPejNB0o39PKOS5+A8seeGsINXnd2JdVm8SBL5uOwzYrrsHjd0SbBszvyFdIXMUyULOsVZ7C4TiyTCCunvvEz7KJu0UXikf7bJ3YMCNhLbqInaGGrKwrLLXbYI5QXW.SKRiqqh5WKlp2MUFGKgN80klIemX7JcxUimvmb2djTWfLgDoSHjo3vSWpBZQEvZJctj1nMnVglp439pDNZ5etG4H0EuJdfchCdlnnNg.CRkTzGDQ4zapcWBokLS.IXx+7hmbOgT4602tPMMEFowIyl04n4Er9QmJjtZMojvKy.8T0kf4f8qBfNPmwzmDKouPgZE5cDTmvzTndgfNguJ+GWmWR.uWYFpZv.z4yavReCTj.1BMnNZcWNfcTOYdRGiQ3cFpR3J57+UXnv+brNBHuYOprAofF0Dgi0qhg61CXbcZZpeULb0kDcdZUAPTNkQiXSWWB3d.zjyCTxt2pprgMX34GRLs3nI0CY3t9xxXo4iwFVXhbe4.znVgBS7QHZF0kGNdhHGrA1Clt0PfeK+Zk.5.Smba7Zjn7z8UqP92KYRU0zcEkegTY+eEvT+cn2AFONHC6cl9AlQ9yExTNptb8rRadUE+AeSpRfdL5glic.mW9xS32ZLl7O9X561l5gikfIEbSKUG4tk9w4e7bii7kcnTXaluW.UERucyOCTIC007YBqCFYIX72j6.NQpM+Kq.nSfZEfU+2WE7vfZEdr79e8TnN0rNMM++fX3B0dgbBwbsPpZ.vvwyTnQGH4fgXnS2WhnoOkoA78qBhIgoqJ9tvWXitF5ln9FHuGqz4G3ohk9s75i4PcbsVsgm+cx66iMXtRsRVp2yFb03+1LbhsVVgPm.CaMkPnVAcYOvoFx+ePpmPGC2InKD4SkWmBbkeACc8GkIVKcfLlzqjBIXDli5L3BBSyyNF9tWgn9IXJ+Hbowv2rOw.SA3rp57PkqIuq1GrfsIEAyaWB51vqSUPzI57VgSu.uUPk9aeWMAQBtkr+PEO6bBg5Dz5FeElovvU6qNCY.KpNc5idDkjgXoR8QtGUmtKKsFdQJUloqD6a1wiCmULpphxMLOKNYUKb3XINV50GS8EcLJg9ny4K4l781wTBG+04G9smud3qD.X0eU57OmZED7sybKBo5DDrNZmghmdB4cUQoS5VXiqEXOC2LoWbA5BIH.QRz74qii3jYKxTYvPCs0PImTYXxe7FdNt6ktHGMNfLWzPE0egIKT61O.P++dc32C4Y3CNl5KH6to2mbk2l.mpV54BMpS7ByVyyffNUFdnjzp+SvB0JDF2AKJpUPGC2wEPxTWqDt.9g7wl0Asx+nfdY6ULJY6SKzmmIA.8OMhxDSBSVX+25nSBLDg9vhrtMHYtTigRc4zX4k4.5Jvn6Vhw9BtQLdVMknmBy1JYjk3Y.vjQWNPd.QHUSFWftv79z3KfTU5uE8wYZn9mllSLetVnNAiggdp.HZfkKsI+l1TV8BifyX7thYaq4iYZSVcevT68CKCLIfUy+cFJ0AyiOGRQLVbCB2ea5VIBCyhxLRNQkG0wR3FVH4kuGwbeoZCRLpSHhUo4XswEs75MbhMbb8IVzBO.WqxK6cx4NhnBHLeUE93P+3HYl2YkRxaJpEkIJ7Eo3of1S2M4waQu+hBOCW4G9kD1ckOi2GWUNKmFHuthx57fosWVjF9PBPwlIkEVljtMGLTKjx8DX0uzlHPbh3y+gD6N.YRu.KXzzPeow7xd0Qf1BwhOR0eGTIn2.UbEUUB73QJIv6FZ4cX3DsyKxLKka1gbhwcIfNN8xdsQjNYaB8W1qCVn9Frw1zkpJ0NfScqKMgNVap7TZ5bvXU+TKajH4SfTd2JoAyg4ezsfyh6ENQrWDBeT79E3JHWlbnsI5W9.+caJODm4FeVskiOHdteYpONXBOPKFS5tPdQMdqhcufefPutbywzEW65ShvurEikvOdwQzQjE0jRDcAN5ZTS3LUWlnkeUKTkwQIjpQ7WasztdYaKgnOsr7NJNDJCpaaTrALCKnyfhM1fpSrApIh0uULbqxvDwOmynS1lJ6NHdgCvMxQuAtp0gaTgi9Ccr.iffILn5fiVD9qbmM4erLatDAie3AYUebZFJGHxvkz2OjFSdFVWRuNuwQiXIH.AILz1IJ1cDvsFgWVrA18XQoOOezK6r4EHuLebbXvhbWU5v07NqRfJDTw3b.g7cdQ9JBubAP213j.57HDLVdiBodcgDqvacVLSG+I7w5+B7ITwXuNCdeUBjuY8xdwEDPHl.bZn+CyCwV3MBwsVwRExDTeXxeL3lC2l60OQUVrP.RlAiScehvcUSuuLSjSwgDEP2omuedHsxfIw1owl9x58okVNlbkB8N89tyv8xzK81xx2cg5P3rbRWrXht.AtPXTkT0k417ZXCSNKVnHSmL9TElSd7l.nxsY6eMia6c+mbM2SIjF22VXZgXbXGT8ix+sCQ8OVaKXJKaDif2wZckQRhUJjWU4ypBawEB0WXYz0Dyeo4KpuCRebFaF87w7WZR7IuhaobsE1bXVzFii+fFCAXSoRUcusPd0qG1KZ0vNVUSHKeXudrr1uoSEhICjB5f6g7rkARgZ7+1YRuzJTFEPZFDu0qHt9BhR6Uld4brDGM8qGizYOBq5l3NO.+Dgfw0yTV71lfG+GuPFfFaLl+RP0ZcHRqokF02VUD7QQPXEvqy1KQfkv2HzNlgqrihPiCR5d0BWbQ7YFfeMBii8Mx+tcuBkQAxovmbD1cTGrdt+OHQ8ubgqIltvQyGhC62fA60Q080URL1ZlzX8gsWs4UWgM9OUlVNNDvYM9mhIS5KrHCvCakpbFg9FXQ5ZryywsiHvvcmMHDQMeQgz3XuWLo9.nilVSeqwVGhQw5HDRmACB7tEYsg9capS0+c6X41HDdpQWDRCyTL.XfzVp9djRbuXjVRqOyJvweX.OjKEfQx9.GTifI1cyqoeRGTeiKDy8QklwFHTW+XoJhIjMw51EFKBVpexE4wzvQXFOebuihp6gyYIn5hLKvwIwEK3MHB2sdJLNIBs51Q0QeSx+vhbIElNwGyEt2ks4NiMyKJ+p9aBFhi84P.pByzsVwnLENnkww9sRH7DG3EMH+O77hvm6Rvw+Q3AeDTcc6DtAG01fWAXSFUa5Q7KXCC24GVukpJmLoHMBwj3zNWWYDVfDWy5GlPlAsx8s9TdGSHY7x4AM3pGKhpqs3XRF3pP5tpi2VLRrh94C6idYgqxbFBo6JA+xE9iKrD7mvR3fw.34EyQUlh2h9xJzHYwWwfDVtBfacoJXT1RQLVtCdC8Iy2wTXrriL8EbEw8lYvlilZA9LGzmGcQFCqQZTkiKnA1B0dgWWny+MeKGM1OYCyyqpH5GalED3w7uEukm5ni7obaAu9NEKv.1fAFjD9d6biYgFfwpaplmuUV0NQoOubNjl0k3rVcXq1+u.L..HMonx+AdOiC.....IUjSD4pPfIH" SYS="TRUE">
+</COMPONENT>
+<COMPONENT DEF_ID="116000" COMP_ID="2" DISPLAY_ORDER="6" X="10" Y="299" WIDTH="60" HEIGHT="60" COMP_COLOR="DarkGreen" BORDER_COLOR="TransparentBlack" TEXT_COLOR="White" F_SIZE="12" LUA_DRIVER="TRUE" SHOW_UNIT="FALSE" MAX="1" MIN="0" STEP="1" NON_CONTROLLABLE="TRUE" BUTTON_TEXT="Connected" BUTTON_ON_TEXT="Connected" BUTTON_OFF_COLOR="DimGrey" BUTTON_TYPE="11">
+<GENERIC_CONTROL IP="192.168.99.201" PROTOCOL="4500001">
+<KEY_ATTR T="12" V="Connection Status" > </KEY_ATTR>
+<DEV_ATTR  T="10" V="1"> </DEV_ATTR>
+</GENERIC_CONTROL>
+</COMPONENT>
+</LUA_PANEL>
+</LUA_INTERFACE_DEF>
+
+</LIBRARY>
+</XILICA>
